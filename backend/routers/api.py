@@ -41,6 +41,30 @@ from backend.models.schemas import (
     AISummaryResponse,
     TimelineItemResponse,
     CodeExplanationResponse,
+    TestCaseCreate,
+    TestCaseUpdate,
+    TestCaseExecuteRequest,
+    TestCaseResponse,
+    DefectDraftCreate,
+    DefectDraftResponse,
+    TesterOverviewResponse,
+    DeveloperOverviewResponse,
+    DeveloperAIAssistRequest,
+    DeveloperAIAssistResponse,
+    WorkspaceFileItem,
+    FileReadResponse,
+    FileSaveRequest,
+    FileSaveResponse,
+    TestRunResponse,
+    ErrorItem,
+    ChangeSetResponse,
+    FinalizeChangeSetRequest,
+    GitStatusResponse,
+    SeleniumEnvironmentStatus,
+    SeleniumJiraLinkRequest,
+    SeleniumRunRequest,
+    SeleniumTestRunListResponse,
+    SeleniumTestRunResponse,
     new_id,
 )
 from backend.integrations.jira.schemas import (
@@ -93,21 +117,23 @@ def health_check():
 @router.get("/config", response_model=AppConfigResponse)
 def get_app_config(db: Session = Depends(get_db)):
     """Return default project and user IDs for agents and frontend."""
-    target_project_id = settings.jira_project_key or DEMO_PROJECT_ID
-    project = db.get(Project, target_project_id)
-    if not project:
-        project = db.get(Project, DEMO_PROJECT_ID)
-    user = db.get(User, DEMO_USER_ID)
-    if not project or not user:
-        seed_demo_data(db)
-        project = db.get(Project, target_project_id) or db.get(Project, DEMO_PROJECT_ID)
-        user = db.get(User, DEMO_USER_ID)
-
+    project = (
+        db.get(Project, settings.jira_project_key)
+        or db.query(Project).first()
+    )
+    user = (
+        db.query(User).filter(User.role == UserRole.DEVELOPER.value, User.is_active == 1).first()
+        or db.query(User).filter(User.is_active == 1).first()
+    )
     monitoring = get_monitoring_status()
+    project_id = project.project_id if project else (settings.jira_project_key or "PP")
+    project_name = project.name if project else f"Project {project_id}"
+    user_id = user.user_id if user else "DEV-001"
+
     return AppConfigResponse(
-        project_id=project.project_id if project else target_project_id,
-        user_id=user.user_id if user else DEMO_USER_ID,
-        project_name=project.name if project else f"Project {target_project_id}",
+        project_id=project_id,
+        user_id=user_id,
+        project_name=project_name,
         monitoring_active=monitoring.get("active", True),
     )
 
@@ -599,6 +625,13 @@ def api_generate_task_ai_summary(task_id: str, db: Session = Depends(get_db)):
     return generate_task_ai_summary(db=db, task_id=task_id)
 
 
+@router.get("/ai/budget-status")
+def api_get_ai_budget_status():
+    """Return free-tier AI budget status, remaining daily quota, and active provider mode."""
+    from backend.services.ai_budget_manager import ai_budget_manager
+    return ai_budget_manager.get_status()
+
+
 # ---------------------------------------------------------
 # Unified Chronological Project Timeline (Feature 5)
 # ---------------------------------------------------------
@@ -631,6 +664,331 @@ def api_get_code_explanations(
 ):
     from backend.services.code_explanation_service import explain_code_changes
     return explain_code_changes(db=db, project_id=project_id, limit=limit)
+
+
+# ---------------------------------------------------------
+# Tester Overview & Test Case Management
+# ---------------------------------------------------------
+
+@router.get("/projects/{project_id}/tester-overview", response_model=TesterOverviewResponse)
+def api_get_tester_overview(project_id: str, db: Session = Depends(get_db)):
+    from backend.services.test_case_service import get_tester_overview
+    return get_tester_overview(db=db, project_id=project_id)
+
+
+@router.get("/projects/{project_id}/test-cases", response_model=list[TestCaseResponse])
+def api_list_test_cases(
+    project_id: str,
+    suite_id: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import list_test_cases
+    return list_test_cases(db=db, project_id=project_id, suite_id=suite_id, status=status, priority=priority)
+
+
+@router.post("/projects/{project_id}/test-cases", response_model=TestCaseResponse)
+def api_create_test_case(
+    project_id: str,
+    payload: TestCaseCreate,
+    created_by: str = "Dave Miller",
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import create_test_case
+    return create_test_case(db=db, project_id=project_id, payload=payload, created_by=created_by)
+
+
+@router.put("/test-cases/{test_case_id}", response_model=TestCaseResponse)
+def api_update_test_case(
+    test_case_id: str,
+    payload: TestCaseUpdate,
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import update_test_case
+    res = update_test_case(db=db, test_case_id=test_case_id, payload=payload)
+    if not res:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    return res
+
+
+@router.post("/test-cases/{test_case_id}/execute", response_model=TestCaseResponse)
+def api_execute_test_case(
+    test_case_id: str,
+    payload: TestCaseExecuteRequest,
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import execute_test_case
+    res = execute_test_case(db=db, test_case_id=test_case_id, verdict=payload.verdict, notes=payload.notes, executed_by=payload.executed_by)
+    if not res:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    return res
+
+
+@router.delete("/test-cases/{test_case_id}")
+def api_delete_test_case(test_case_id: str, db: Session = Depends(get_db)):
+    from backend.services.test_case_service import delete_test_case
+    if not delete_test_case(db=db, test_case_id=test_case_id):
+        raise HTTPException(status_code=404, detail="Test case not found")
+    return {"status": "deleted", "test_case_id": test_case_id}
+
+
+# ---------------------------------------------------------
+# Test Failure-to-Jira Defect Linking & Defect Drafts
+# ---------------------------------------------------------
+
+@router.get("/projects/{project_id}/defect-drafts", response_model=list[DefectDraftResponse])
+def api_list_defect_drafts(project_id: str, db: Session = Depends(get_db)):
+    from backend.services.test_case_service import list_defect_drafts
+    return list_defect_drafts(db=db, project_id=project_id)
+
+
+@router.post("/projects/{project_id}/defect-drafts", response_model=DefectDraftResponse)
+def api_create_defect_draft(
+    project_id: str,
+    payload: DefectDraftCreate,
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import create_defect_draft
+    return create_defect_draft(db=db, project_id=project_id, payload=payload)
+
+
+@router.post("/defect-drafts/{draft_id}/confirm")
+def api_confirm_defect_draft(
+    draft_id: str,
+    confirmed_by: str = "Dave Miller (QA)",
+    db: Session = Depends(get_db),
+):
+    from backend.services.test_case_service import confirm_defect_draft
+    return confirm_defect_draft(db=db, draft_id=draft_id, confirmed_by=confirmed_by)
+
+
+@router.delete("/defect-drafts/{draft_id}")
+def api_delete_defect_draft(draft_id: str, db: Session = Depends(get_db)):
+    from backend.services.test_case_service import delete_defect_draft
+    if not delete_defect_draft(db=db, draft_id=draft_id):
+        raise HTTPException(status_code=404, detail="Defect draft not found")
+    return {"status": "deleted", "draft_id": draft_id}
+
+
+# ---------------------------------------------------------
+# Automated Browser Tests (Selenium + Java + TestNG)
+# ---------------------------------------------------------
+
+@router.get("/projects/{project_id}/selenium/status", response_model=SeleniumEnvironmentStatus)
+def api_get_selenium_status(project_id: str):
+    from backend.services.selenium_test_service import check_selenium_environment
+    return check_selenium_environment()
+
+
+@router.get("/projects/{project_id}/selenium/runs", response_model=SeleniumTestRunListResponse)
+def api_list_selenium_runs(project_id: str, limit: int = 25, db: Session = Depends(get_db)):
+    from backend.services.selenium_test_service import check_selenium_environment, list_selenium_runs
+    env = check_selenium_environment()
+    runs = list_selenium_runs(project_id=project_id, db=db, limit=limit)
+    return SeleniumTestRunListResponse(
+        project_id=project_id,
+        environment=env,
+        runs=runs,
+        total_runs=len(runs),
+    )
+
+
+@router.get("/selenium/runs/{run_id}", response_model=SeleniumTestRunResponse)
+def api_get_selenium_run(run_id: str, db: Session = Depends(get_db)):
+    from backend.services.selenium_test_service import get_selenium_run_by_id
+    run = get_selenium_run_by_id(run_id=run_id, db=db)
+    if not run:
+        raise HTTPException(status_code=404, detail="Selenium test run not found")
+    return run
+
+
+@router.post("/projects/{project_id}/selenium/run", response_model=SeleniumTestRunResponse)
+def api_run_selenium_suite(
+    project_id: str,
+    payload: SeleniumRunRequest | None = None,
+    executed_by: str = "Dave Miller (QA)",
+    db: Session = Depends(get_db),
+):
+    from backend.services.selenium_test_service import execute_selenium_test_suite
+    req = payload or SeleniumRunRequest()
+    return execute_selenium_test_suite(
+        project_id=project_id,
+        headless=req.headless,
+        browser=req.browser,
+        test_url=req.test_url,
+        suite_file=req.suite_file,
+        executed_by=executed_by,
+        db=db,
+    )
+
+
+@router.post("/selenium/runs/{run_id}/link-jira")
+def api_link_selenium_failure_to_jira(
+    run_id: str,
+    payload: SeleniumJiraLinkRequest,
+    user_name: str = "Dave Miller (QA)",
+    db: Session = Depends(get_db),
+):
+    from backend.services.selenium_test_service import link_selenium_failure_to_jira
+    return link_selenium_failure_to_jira(
+        run_id=run_id,
+        test_name=payload.test_name,
+        jira_issue_key=payload.jira_issue_key,
+        failure_message=payload.failure_message,
+        db=db,
+        user_name=user_name,
+    )
+
+
+
+# ---------------------------------------------------------
+# Developer Overview Dashboard & AI Assistant
+# ---------------------------------------------------------
+
+@router.get("/projects/{project_id}/developer-overview", response_model=DeveloperOverviewResponse)
+def api_get_developer_overview(
+    project_id: str,
+    user_id: str = Query(default="DEV-001"),
+    db: Session = Depends(get_db),
+):
+    from backend.services.developer_service import get_developer_overview
+    return get_developer_overview(db=db, project_id=project_id, user_id=user_id)
+
+
+@router.post("/projects/{project_id}/developer/ai-assist", response_model=DeveloperAIAssistResponse)
+def api_developer_ai_assist(
+    project_id: str,
+    payload: DeveloperAIAssistRequest,
+    db: Session = Depends(get_db),
+):
+    from backend.services.ai_service import assist_developer
+    return assist_developer(
+        db=db,
+        project_id=project_id,
+        user_id=payload.user_id,
+        mode=payload.mode,
+        prompt=payload.prompt,
+        context_data=payload.context_data,
+    )
+
+
+# ---------------------------------------------------------
+# Real-Time Code Tracking, Error Monitoring & Git Sync
+# ---------------------------------------------------------
+
+@router.get("/projects/{project_id}/code/files", response_model=list[WorkspaceFileItem])
+def api_list_code_files(project_id: str, db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.list_files(project_id)
+
+
+@router.get("/projects/{project_id}/code/file", response_model=FileReadResponse)
+def api_read_code_file(project_id: str, path: str = Query(...), db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    try:
+        return service.read_file(project_id, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"File not found: {path}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/code/file", response_model=FileSaveResponse)
+def api_save_code_file(project_id: str, payload: FileSaveRequest, db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    try:
+        return service.save_file(
+            project_id=project_id,
+            rel_path=payload.path,
+            content=payload.content,
+            user_id=payload.user_id,
+            change_set_title=payload.change_set_title,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/code/test-run", response_model=TestRunResponse)
+def api_run_workspace_tests(
+    project_id: str,
+    change_set_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.run_tests(project_id=project_id, change_set_id=change_set_id)
+
+
+@router.get("/projects/{project_id}/code/change-sets/active", response_model=ChangeSetResponse | None)
+def api_get_active_change_set(project_id: str, db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.get_active_change_set(project_id)
+
+
+@router.get("/projects/{project_id}/code/change-sets", response_model=list[ChangeSetResponse])
+def api_list_change_sets(project_id: str, limit: int = Query(default=15), db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.list_change_sets(project_id, limit=limit)
+
+
+@router.get("/projects/{project_id}/code/errors", response_model=list[ErrorItem])
+def api_list_tracked_errors(
+    project_id: str,
+    status: str = Query(default="ALL"),
+    db: Session = Depends(get_db),
+):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.list_errors(project_id, status_filter=status)
+
+
+@router.get("/projects/{project_id}/code/git-status", response_model=GitStatusResponse)
+def api_get_git_status(project_id: str, db: Session = Depends(get_db)):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    return service.get_git_status(project_id)
+
+
+@router.post("/projects/{project_id}/code/change-sets/{change_set_id}/finalize", response_model=ChangeSetResponse)
+def api_finalize_change_set(
+    project_id: str,
+    change_set_id: str,
+    payload: FinalizeChangeSetRequest,
+    db: Session = Depends(get_db),
+):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    try:
+        return service.finalize_change_set(
+            project_id=project_id,
+            change_set_id=change_set_id,
+            commit_message=payload.commit_message,
+            author_name=payload.author_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/projects/{project_id}/code/change-sets/{change_set_id}/sync")
+def api_sync_change_set(
+    project_id: str,
+    change_set_id: str,
+    db: Session = Depends(get_db),
+):
+    from backend.services.code_tracking_service import CodeTrackingService
+    service = CodeTrackingService(db)
+    try:
+        return service.sync_to_remote(project_id=project_id, change_set_id=change_set_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 
 
 

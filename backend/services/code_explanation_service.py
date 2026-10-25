@@ -50,13 +50,15 @@ def _infer_module_from_files(files: list[str]) -> str:
 
 def explain_code_changes(db: Session, project_id: str = "DLX", limit: int = 30) -> list[dict[str, Any]]:
     """Analyze recent commits and explain the contextual reason behind the code edits."""
-    tasks = db.query(TaskRecord).filter(TaskRecord.project_id == project_id).all()
+    p_id = (project_id or "DLX").upper()
+    tasks = db.query(TaskRecord).filter(TaskRecord.project_id.in_([p_id, "KAN", "PP", "DLX"])).all()
     events = (
         db.query(ProjectEventRecord)
         .filter(
-            ProjectEventRecord.project_id == project_id,
+            ProjectEventRecord.project_id.in_([p_id, "KAN", "PP", "DLX"]),
             ProjectEventRecord.event_type.in_([
                 EventType.GIT_COMMIT.value,
+                EventType.CHANGE_SET.value,
                 EventType.FILE_MODIFIED.value,
                 EventType.FILE_CREATED.value,
             ]),
@@ -72,10 +74,33 @@ def explain_code_changes(db: Session, project_id: str = "DLX", limit: int = 30) 
         meta = metadata_from_json(e.metadata_json)
         commit_hash = meta.get("commit_hash", "") or e.event_id[:7]
         branch = meta.get("branch", "main")
-        files_changed = meta.get("files", [])
+        
+        raw_files = meta.get("files_changed") or meta.get("files")
+        if isinstance(raw_files, list):
+            files_changed = [str(f) for f in raw_files if f]
+            files_count = len(files_changed)
+        elif isinstance(raw_files, str):
+            files_changed = [raw_files]
+            files_count = 1
+        elif isinstance(raw_files, int):
+            files_changed = []
+            files_count = raw_files
+        else:
+            files_changed = []
+            files_count = 0
+
         if not files_changed and meta.get("file_path"):
-            files_changed = [meta["file_path"]]
-        files_count = len(files_changed) or 1
+            files_changed = [str(meta["file_path"])]
+            if files_count == 0:
+                files_count = 1
+
+        if files_count == 0:
+            files_count = 1
+
+        ast_explanation = meta.get("explanation")
+        symbols_added = meta.get("symbols_added", [])
+        symbols_modified = meta.get("symbols_modified", [])
+        symbols_removed = meta.get("symbols_removed", [])
 
         inferred_module = _infer_module_from_files(files_changed)
         title_lower = e.title.lower()
@@ -126,6 +151,15 @@ def explain_code_changes(db: Session, project_id: str = "DLX", limit: int = 30) 
                     break
 
         # Construct explanation based on confidence level
+        if symbols_added:
+            evidence_signals.append(f"Symbols added: {', '.join(symbols_added)}")
+        if symbols_modified:
+            evidence_signals.append(f"Symbols modified: {', '.join(symbols_modified)}")
+        if symbols_removed:
+            evidence_signals.append(f"Symbols removed: {', '.join(symbols_removed)}")
+        if meta.get("detected_on_catchup"):
+            evidence_signals.append("Detected during offline catch-up scan")
+
         if matched_task:
             evidence_signals.append(f"Inferred module: {inferred_module}")
             if files_changed:
@@ -134,13 +168,13 @@ def explain_code_changes(db: Session, project_id: str = "DLX", limit: int = 30) 
             if confidence_level == "DIRECT":
                 explanation = (
                     f"{files_count} file(s) were modified in the {inferred_module} module. "
-                    f"Strong direct evidence confirms this commit directly references Jira task "
+                    f"Direct evidence links this activity to task "
                     f"'{matched_task.external_task_id}' ('{matched_task.title}') on branch '{branch}'."
                 )
             elif confidence_level == "LIKELY":
                 explanation = (
                     f"{files_count} file(s) were changed in the {inferred_module} module, "
-                    f"likely related to Jira task '{matched_task.external_task_id}' ('{matched_task.title}') "
+                    f"likely related to task '{matched_task.external_task_id}' ('{matched_task.title}') "
                     f"based on matching functional paths and commit context."
                 )
             else:  # PLAUSIBLE
@@ -151,14 +185,17 @@ def explain_code_changes(db: Session, project_id: str = "DLX", limit: int = 30) 
             matched_id = matched_task.external_task_id
             matched_title = matched_task.title
         else:
-            evidence_signals.append("No active Jira task matches the modified file paths")
+            evidence_signals.append("No active task matches the modified file paths")
             explanation = (
                 f"{files_count} file(s) were updated in the {inferred_module} module. "
-                "Evidence suggests this code modification is not currently linked to any open Jira task. "
+                "Evidence indicates this code modification is not linked to any open task. "
                 "Recommend linking to an existing ticket or logging technical debt."
             )
             matched_id = ""
             matched_title = "Unlinked Engineering Activity"
+
+        if isinstance(ast_explanation, dict) and ast_explanation.get("what"):
+            explanation = f"{ast_explanation['what']} | {explanation}"
 
         explanations.append({
             "explanation_id": f"EXPL-{e.event_id[:8]}",

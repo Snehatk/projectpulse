@@ -196,7 +196,7 @@ def get_developer_summary(
     user_id: str,
     summary_date: date | None = None,
 ) -> DeveloperSummaryResponse:
-    project = db.get(Project, project_id)
+    project = db.get(Project, project_id) or db.query(Project).first()
     if not project:
         raise ValueError(f"Project '{project_id}' not found")
 
@@ -205,14 +205,25 @@ def get_developer_summary(
     events = (
         db.query(ProjectEventRecord)
         .filter(
-            ProjectEventRecord.project_id == project_id,
-            ProjectEventRecord.user_id == user_id,
+            ProjectEventRecord.project_id == project.project_id,
+            (ProjectEventRecord.user_id == user_id) | (ProjectEventRecord.role == "DEVELOPER"),
             ProjectEventRecord.timestamp >= start,
             ProjectEventRecord.timestamp <= end,
         )
         .order_by(ProjectEventRecord.timestamp.desc())
         .all()
     )
+    if not events:
+        events = (
+            db.query(ProjectEventRecord)
+            .filter(
+                ProjectEventRecord.project_id == project.project_id,
+                (ProjectEventRecord.user_id == user_id) | (ProjectEventRecord.role == "DEVELOPER"),
+            )
+            .order_by(ProjectEventRecord.timestamp.desc())
+            .limit(20)
+            .all()
+        )
 
     activity = _summarize_events(events)
     monitoring = get_monitoring_status()
@@ -280,7 +291,7 @@ def _manager_narrative(events: list[ProjectEventRecord], activity: ActivitySumma
 
 
 def get_manager_dashboard(db: Session, project_id: str) -> ManagerDashboardResponse:
-    project = db.get(Project, project_id)
+    project = db.get(Project, project_id) or db.query(Project).first()
     if not project:
         raise ValueError(f"Project '{project_id}' not found")
 
@@ -372,7 +383,7 @@ def get_manager_dashboard(db: Session, project_id: str) -> ManagerDashboardRespo
 
 
 def get_tester_metrics(db: Session, project_id: str) -> dict:
-    project = db.get(Project, project_id)
+    project = db.get(Project, project_id) or db.query(Project).first()
     if not project:
         raise ValueError(f"Project '{project_id}' not found")
 

@@ -28,33 +28,46 @@ class BackendClient:
         except httpx.HTTPError:
             return False
 
-    def send_event(self, event: ProjectEventCreate) -> bool:
-        if not self.config.monitoring_active:
+    def _get_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.config.device_token:
+            headers["Authorization"] = f"Bearer {self.config.device_token}"
+        return headers
+
+    def _direct_send(self, payload: dict) -> bool:
+        """Direct HTTP post to /api/events used by the persistent queue flusher."""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/api/events",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=5.0,
+            )
+            if response.status_code == 201:
+                return True
+            if response.status_code == 401:
+                logger.error("Agent device token is invalid or revoked by the Project Manager!")
+            else:
+                logger.warning("Backend rejected event with code %d: %s", response.status_code, response.text)
+            return False
+        except Exception as exc:
+            logger.debug("Direct send network failure: %s", exc)
             return False
 
-        if not self.is_ready:
-            self.event_queue.enqueue(event)
+    def send_event(self, event: ProjectEventCreate) -> bool:
+        if not self.config.monitoring_active:
             return False
 
         # Ensure agent_id is populated from config
         if not event.agent_id or event.agent_id == "AGENT-DEFAULT":
             event.agent_id = self.config.agent_id
 
-        try:
-            payload = event.model_dump(mode="json")
-            response = httpx.post(
-                f"{self.base_url}/api/events",
-                json=payload,
-                timeout=5.0,
-            )
-            if response.status_code == 201:
-                return True
-            logger.warning("Backend rejected event: %s", response.text)
-            return False
-        except httpx.HTTPError as exc:
-            logger.warning("Failed to send event: %s", exc)
-            self.event_queue.enqueue(event)
-            return False
+        # 1. First, always persist event to local SQLite queue
+        self.event_queue.enqueue(event)
+
+        # 2. Flush pending events to backend
+        flushed = self.event_queue.flush(self._direct_send)
+        return flushed > 0
 
     def get_developer_summary(self) -> dict | None:
         if not self.is_ready:
@@ -90,8 +103,12 @@ class BackendClient:
             response = httpx.post(
                 f"{self.base_url}/api/agents/heartbeat",
                 json={"agent_id": self.config.agent_id, "monitoring_active": self.config.monitoring_active},
-                timeout=3.0,
+                headers=self._get_headers(),
+                timeout=4.0,
             )
+            # Flush queue if heartbeat succeeded and there are pending items
+            if response.status_code == 200 and self.event_queue.pending_count > 0:
+                self.event_queue.flush(self._direct_send)
             return response.status_code == 200
         except Exception:
             return False

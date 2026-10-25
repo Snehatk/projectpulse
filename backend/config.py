@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_project_key: str = "KAN"
 
+    # Authentication & Security
+    secret_key: str = "projectpulse-super-secret-key-change-in-prod"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 120
+
+    # Demo Mode Flag (False = clean start, True = explicit opt-in demo)
+    demo_mode: bool = False
+
     # AI Service Configuration (Optional LLM keys)
     gemini_api_key: str = ""
     openai_api_key: str = ""

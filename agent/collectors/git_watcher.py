@@ -2,15 +2,17 @@
 
 import logging
 import os
+from pathlib import Path
+import re
 import subprocess
 import threading
 import time
-from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
+from agent.ast_analyzer import generate_deterministic_explanation
 from agent.collectors.base import BaseCollector
 from agent.collectors.git_parser import (
     GitSignal,
@@ -211,7 +213,7 @@ class GitActivityCollector(BaseCollector):
         except OSError as exc:
             logger.warning("Could not install pre-push hook: %s", exc)
 
-    def _emit_signal(self, signal: GitSignal) -> None:
+    def _emit_signal(self, signal: GitSignal, detected_on_catchup: bool = False) -> None:
         event_type = SIGNAL_TO_EVENT.get(signal.signal_type)
         if not event_type:
             return
@@ -226,20 +228,68 @@ class GitActivityCollector(BaseCollector):
             EventType.GIT_PUSH: f"Pushed branch {branch}",
         }
 
+        task_key = None
+        explanation = None
+        files_changed = []
+
+        if event_type == EventType.GIT_COMMIT and signal.commit_hash:
+            match = re.search(r"\b([A-Z]{2,10}-\d+)\b", signal.message or "")
+            if match:
+                task_key = match.group(1)
+
+            if self._git_dir:
+                try:
+                    out = subprocess.check_output(
+                        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", signal.commit_hash],
+                        cwd=str(self._git_dir.parent),
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    files_changed = [ln.strip() for ln in out.splitlines() if ln.strip()]
+                except Exception:
+                    pass
+
+            explanation = generate_deterministic_explanation(
+                files_changed=files_changed,
+                commit_message=signal.message or "",
+                task_key=task_key or "",
+                detected_on_catchup=detected_on_catchup,
+            )
+
+            try:
+                marker_file = self._git_dir / "projectpulse" / "last_seen_commit.txt"
+                marker_file.parent.mkdir(parents=True, exist_ok=True)
+                marker_file.write_text(signal.commit_hash, encoding="utf-8")
+            except Exception:
+                pass
+
+        metadata = {
+            "branch": branch,
+            "commit_hash": signal.commit_hash,
+            "commit_message": signal.message,
+            "project": self.config.project_name,
+            "detected_on_catchup": detected_on_catchup,
+        }
+        if task_key:
+            metadata["task_key"] = task_key
+        if files_changed:
+            metadata["files_changed"] = files_changed
+        if explanation:
+            metadata["explanation"] = explanation
+
+        title = titles.get(event_type, signal.signal_type.value)
+        if detected_on_catchup and event_type == EventType.GIT_COMMIT:
+            title = f"[Catch-up] {title}"
+
         event = self.normalizer.normalize(
             source=EventSource.GIT,
             event_type=event_type,
-            title=titles.get(event_type, signal.signal_type.value),
+            title=title,
             description=signal.message or signal.raw_line,
-            metadata={
-                "branch": branch,
-                "commit_hash": signal.commit_hash,
-                "commit_message": signal.message,
-                "project": self.config.project_name,
-            },
+            metadata=metadata,
         )
         self.emit(event)
-        logger.info("Git event: %s (%s)", event_type.value, branch)
+        logger.info("Git event: %s (%s) [catchup=%s]", event_type.value, branch, detected_on_catchup)
 
     def process_git_path(self, path: Path, created: bool = False) -> None:
         if self._git_dir is None:
@@ -333,8 +383,60 @@ class GitActivityCollector(BaseCollector):
         heads_dir = self._git_dir / "refs" / "heads"
         self._tracker.seed_existing_branches(heads_dir)
         self._seed_log_offsets()
+        self._catch_up_commits()
         self._ensure_push_hook(self._git_dir)
         return True
+
+    def _catch_up_commits(self) -> None:
+        """Startup catch-up: detect any commits created while agent was stopped and emit catchup events."""
+        if self._git_dir is None:
+            return
+        pulse_dir = self._git_dir / "projectpulse"
+        pulse_dir.mkdir(parents=True, exist_ok=True)
+        marker_file = pulse_dir / "last_seen_commit.txt"
+
+        repo_root = self._git_dir.parent
+        try:
+            head_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(repo_root),
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            return
+
+        if not marker_file.exists():
+            marker_file.write_text(head_sha, encoding="utf-8")
+            return
+
+        last_sha = marker_file.read_text(encoding="utf-8").strip()
+        if last_sha and last_sha != head_sha:
+            try:
+                raw = subprocess.check_output(
+                    ["git", "log", f"{last_sha}..HEAD", "--format=%H|||%s"],
+                    cwd=str(repo_root),
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                branch = read_current_branch(self._git_dir)
+                for line in reversed(raw.splitlines()):
+                    if "|||" in line:
+                        sha, msg = line.split("|||", 1)
+                        self._emit_signal(
+                            GitSignal(
+                                signal_type=GitSignalType.COMMIT,
+                                branch=branch,
+                                commit_hash=sha.strip(),
+                                message=msg.strip(),
+                            ),
+                            detected_on_catchup=True,
+                        )
+                logger.info("Startup Catch-up: Reconciled offline git commits from %s to %s", last_sha[:7], head_sha[:7])
+            except Exception as exc:
+                logger.debug("Failed catch-up git reconciliation: %s", exc)
+
+        marker_file.write_text(head_sha, encoding="utf-8")
 
     def _seed_log_offsets(self) -> None:
         """Skip git history that existed before monitoring started."""

@@ -41,8 +41,17 @@ def _run_sqlite_migrations() -> None:
         # Check users table
         try:
             columns = [row[1] for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
-            if columns and "external_id" not in columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN external_id VARCHAR(64)"))
+            if columns:
+                if "external_id" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN external_id VARCHAR(64)"))
+                if "email" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(120)"))
+                if "password_hash" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+                if "is_active" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1"))
+                if "last_login" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN last_login DATETIME"))
         except Exception:
             pass
 

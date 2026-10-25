@@ -18,23 +18,30 @@ LEGACY_PROJECT_ID = "P001"
 
 
 def seed_demo_data(db: Session) -> None:
-    """Create comprehensive demo scenario for academic and demonstration evaluation."""
+    """Create comprehensive demo scenario for academic and demonstration evaluation (only if demo_mode is True)."""
+    from backend.config import settings
+    from backend.auth.security import get_password_hash
+
+    if not settings.demo_mode:
+        logger.info("Demo mode is disabled (DEMO_MODE=False). Skipping automatic seed.")
+        return
 
     # 1. Seed Users (PM, Developers, Testers, QA)
     users_data = [
-        ("PM-001", "Sarah Chen (Project Manager)", UserRole.PROJECT_MANAGER.value),
-        ("DEV-001", "Alex Rivera (Senior Dev)", UserRole.DEVELOPER.value),
-        ("DEV-002", "Marcus Vance (Backend Dev)", UserRole.DEVELOPER.value),
-        ("DEV-003", "Priya Sharma (Frontend Dev)", UserRole.DEVELOPER.value),
-        ("TEST-001", "Dave Miller (Automation Tester)", UserRole.TESTER.value),
-        ("TEST-002", "Emma Watson (Performance Tester)", UserRole.TESTER.value),
-        ("QA-001", "Liam Johnson (Lead QA)", UserRole.QA.value),
-        (LEGACY_USER_ID, "Demo Developer", UserRole.DEVELOPER.value),
+        ("PM-001", "Sarah Chen (Project Manager)", UserRole.PROJECT_MANAGER.value, "pm@pulse.local"),
+        ("DEV-001", "Alex Rivera (Senior Dev)", UserRole.DEVELOPER.value, "dev@pulse.local"),
+        ("DEV-002", "Marcus Vance (Backend Dev)", UserRole.DEVELOPER.value, "dev2@pulse.local"),
+        ("DEV-003", "Priya Sharma (Frontend Dev)", UserRole.DEVELOPER.value, "dev3@pulse.local"),
+        ("TEST-001", "Dave Miller (Automation Tester)", UserRole.TESTER.value, "tester@pulse.local"),
+        ("TEST-002", "Emma Watson (Performance Tester)", UserRole.TESTER.value, "tester2@pulse.local"),
+        ("QA-001", "Liam Johnson (Lead QA)", UserRole.QA.value, "qa@pulse.local"),
+        (LEGACY_USER_ID, "Demo Developer", UserRole.DEVELOPER.value, "legacy@pulse.local"),
     ]
 
-    for uid, name, role in users_data:
+    default_hash = get_password_hash("Password123!")
+    for uid, name, role, email in users_data:
         if not db.get(User, uid):
-            db.add(User(user_id=uid, name=name, role=role))
+            db.add(User(user_id=uid, name=name, role=role, email=email, password_hash=default_hash, is_active=1))
 
     db.commit()
 

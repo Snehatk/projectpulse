@@ -33,7 +33,7 @@ def run_setup(args=None):
     print_banner()
 
     parser = argparse.ArgumentParser(description="ProjectPulse Agent First-Run Setup")
-    parser.add_argument("--role", choices=["DEVELOPER", "TESTER", "QA", "DEVOPS", "DESIGNER"], help="Agent role")
+    parser.add_argument("--role", choices=["DEVELOPER", "TESTER", "QA", "PROJECT_MANAGER"], help="Agent role")
     parser.add_argument("--agent-id", help="Unique Agent ID (e.g. AGENT-DEV-001)")
     parser.add_argument("--project-folder", help="Target project folder path to monitor")
     parser.add_argument("--project-id", default="DLX", help="Project ID")

@@ -16,28 +16,29 @@ class IntegrationManager:
     def __init__(self):
         self._adapters: dict[str, BasePMAdapter] = {
             "JIRA": JiraAdapter(),
-            "MONDAY": MondayAdapter(),
-            "ASANA": AsanaAdapter(),
-            "TRELLO": TrelloAdapter(),
-            "CLICKUP": ClickUpAdapter(),
-            "LINEAR": LinearAdapter(),
         }
-        # Pre-connect Jira, Trello, Linear by default for seamless demonstration
+        # Only initialize Jira adapter if credentials or local config available
         self._adapters["JIRA"].connect({})
-        self._adapters["TRELLO"].connect({})
-        self._adapters["LINEAR"].connect({})
 
     def get_adapter(self, platform: str) -> BasePMAdapter | None:
         return self._adapters.get(platform.upper())
 
     def list_integrations(self) -> list[dict[str, Any]]:
-        results = []
-        for name, adapter in self._adapters.items():
+        results = [
+            {
+                "platform": "JIRA",
+                "connected": self._adapters["JIRA"].is_connected(),
+                "status": "CONNECTED" if self._adapters["JIRA"].is_connected() else "NOT_CONNECTED",
+                "supported_operations": ["get_projects", "get_tasks", "get_task", "connect", "disconnect", "sync"],
+            }
+        ]
+        # Stub platforms explicitly marked NOT_IMPLEMENTED (no fake connected state)
+        for name in ["MONDAY", "ASANA", "TRELLO", "CLICKUP", "LINEAR"]:
             results.append({
                 "platform": name,
-                "connected": adapter.is_connected(),
-                "status": "CONNECTED" if adapter.is_connected() else "NOT_CONNECTED",
-                "supported_operations": ["get_projects", "get_tasks", "get_task", "connect", "disconnect"],
+                "connected": False,
+                "status": "NOT_IMPLEMENTED",
+                "supported_operations": [],
             })
         return results
 

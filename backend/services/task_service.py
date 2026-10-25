@@ -10,11 +10,16 @@ import json
 
 
 def create_or_update_task(db: Session, payload: TaskCreate) -> TaskRecord:
+    external_id = payload.external_task_id
+    if not external_id:
+        existing_count = db.query(TaskRecord).filter(TaskRecord.project_id == payload.project_id).count()
+        external_id = f"{payload.project_id or 'PP'}-{existing_count + 1}"
+
     task = (
         db.query(TaskRecord)
         .filter(
             TaskRecord.project_id == payload.project_id,
-            TaskRecord.external_task_id == payload.external_task_id,
+            TaskRecord.external_task_id == external_id,
         )
         .first()
     )
@@ -25,8 +30,8 @@ def create_or_update_task(db: Session, payload: TaskCreate) -> TaskRecord:
     if not task:
         task = TaskRecord(
             project_id=payload.project_id,
-            source=payload.source,
-            external_task_id=payload.external_task_id,
+            source=payload.source or "LOCAL_BOARD",
+            external_task_id=external_id,
             title=payload.title,
             description=payload.description or "",
             status=payload.status,

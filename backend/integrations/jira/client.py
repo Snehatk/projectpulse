@@ -175,6 +175,19 @@ class JiraCloudClient:
         except Exception as exc:
             raise self._translate_error(exc)
 
+    def get_all_projects(self) -> list[dict[str, Any]]:
+        """Fetch all projects from /rest/api/3/project."""
+        auth = self._get_auth()
+        headers = self._get_headers()
+        url = f"{self.base_url}/rest/api/3/project"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.get(url, auth=auth, headers=headers)
+                res.raise_for_status()
+                return res.json()
+        except Exception as exc:
+            raise self._translate_error(exc)
+
     def search_issues(
         self,
         project_key: str,
@@ -303,3 +316,109 @@ class JiraCloudClient:
                 return data.get("comments", [])
         except Exception as exc:
             raise self._translate_error(exc)
+
+    def create_issue(
+        self,
+        project_key: str,
+        summary: str,
+        description: str,
+        issue_type: str = "Bug",
+        priority: str = "High",
+        extra_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new issue/defect in Jira Cloud REST API v3."""
+        auth = self._get_auth()
+        headers = self._get_headers()
+        url = f"{self.base_url}/rest/api/3/issue"
+
+        # Atlassian Document Format for description
+        desc_adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": description or summary}],
+                }
+            ],
+        }
+
+        fields: dict[str, Any] = {
+            "project": {"key": project_key},
+            "summary": summary,
+            "description": desc_adf,
+            "issuetype": {"name": issue_type},
+        }
+        if priority:
+            fields["priority"] = {"name": priority}
+        if extra_fields:
+            fields.update(extra_fields)
+
+        payload = {"fields": fields}
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, auth=auth, headers=headers)
+                res.raise_for_status()
+                return res.json()
+        except Exception as exc:
+            raise self._translate_error(exc)
+
+    def add_comment(self, issue_id_or_key: str, body: str) -> dict[str, Any]:
+        """Add a comment to an issue in Jira Cloud REST API v3."""
+        auth = self._get_auth()
+        headers = self._get_headers()
+        url = f"{self.base_url}/rest/api/3/issue/{issue_id_or_key}/comment"
+
+        comment_adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": body}],
+                }
+            ],
+        }
+        payload = {"body": comment_adf}
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, auth=auth, headers=headers)
+                res.raise_for_status()
+                return res.json()
+        except Exception as exc:
+            raise self._translate_error(exc)
+
+    def transition_issue(self, issue_id_or_key: str, transition_name_or_id: str) -> dict[str, Any]:
+        """Perform a workflow transition on an issue in Jira Cloud REST API v3."""
+        auth = self._get_auth()
+        headers = self._get_headers()
+
+        # 1. Fetch available transitions
+        url_trans = f"{self.base_url}/rest/api/3/issue/{issue_id_or_key}/transitions"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.get(url_trans, auth=auth, headers=headers)
+                res.raise_for_status()
+                data = res.json()
+                transitions = data.get("transitions", [])
+
+            target_id = None
+            for t in transitions:
+                if t.get("id") == str(transition_name_or_id) or t.get("name", "").lower() == str(transition_name_or_id).lower():
+                    target_id = t.get("id")
+                    break
+
+            if not target_id and transitions:
+                target_id = transitions[0].get("id")
+
+            if not target_id:
+                raise JiraClientError(f"No suitable workflow transition found matching '{transition_name_or_id}'", 400)
+
+            # 2. Execute transition
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url_trans, json={"transition": {"id": target_id}}, auth=auth, headers=headers)
+                res.raise_for_status()
+                return {"status": "transitioned", "transition_id": target_id}
+        except Exception as exc:
+            raise self._translate_error(exc)
+

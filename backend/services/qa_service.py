@@ -136,7 +136,7 @@ def record_qa_verdict(db: Session, project_id: str, approved: bool, build_ref: s
 
 
 def get_qa_metrics(db: Session, project_id: str) -> dict:
-    project = db.get(Project, project_id)
+    project = db.get(Project, project_id) or db.query(Project).first()
     if not project:
         raise ValueError(f"Project '{project_id}' not found")
 

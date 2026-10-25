@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getTaskAISummary, getTaskEvidence, getTasks, syncJiraProject } from "../api/client";
+import { createLocalTask, getTaskAISummary, getTaskEvidence, getTasks, syncJiraProject } from "../api/client";
 
 export default function TasksView({ projectId }) {
   const [tasks, setTasks] = useState([]);
@@ -8,6 +8,17 @@ export default function TasksView({ projectId }) {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [syncing, setSyncing] = useState(false);
+
+  // Local Task Board Creation State
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [taskForm, setTaskForm] = useState({
+    title: "",
+    description: "",
+    assignee: "",
+    priority: "HIGH",
+    status: "TODO",
+  });
+  const [creatingTask, setCreatingTask] = useState(false);
 
   // Feature 9: Task Evidence Detail Modal State
   const [selectedTaskId, setSelectedTaskId] = useState(null);
@@ -76,6 +87,26 @@ export default function TasksView({ projectId }) {
     }
   };
 
+  const handleSaveLocalTask = async (e) => {
+    e.preventDefault();
+    if (!taskForm.title.trim()) return;
+    setCreatingTask(true);
+    try {
+      await createLocalTask({
+        ...taskForm,
+        project_id: projectId || "PP",
+        source: "LOCAL_BOARD",
+      });
+      setShowCreateModal(false);
+      setTaskForm({ title: "", description: "", assignee: "", priority: "HIGH", status: "TODO" });
+      await load();
+    } catch (err) {
+      alert(`Failed to create task: ${err.message}`);
+    } finally {
+      setCreatingTask(false);
+    }
+  };
+
   const getStatusBadge = (status) => {
     switch (status) {
       case "COMPLETED":
@@ -139,6 +170,14 @@ export default function TasksView({ projectId }) {
         </div>
 
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ background: "#10b981", borderColor: "#059669" }}
+            onClick={() => setShowCreateModal(true)}
+          >
+            + New Local Task
+          </button>
           <button
             type="button"
             className="btn-primary"
@@ -483,6 +522,136 @@ export default function TasksView({ projectId }) {
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* Create Local Task Modal */}
+      {showCreateModal && (
+        <div
+          className="modal-overlay"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.75)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={() => setShowCreateModal(false)}
+        >
+          <div
+            className="modal-card"
+            style={{
+              background: "#0f172a",
+              border: "1px solid rgba(255,255,255,0.15)",
+              borderRadius: "12px",
+              padding: "1.75rem",
+              width: "100%",
+              maxWidth: "520px",
+              color: "#fff",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <h2 style={{ margin: 0, fontSize: "1.25rem" }}>Create Local Task (Offline Board)</h2>
+              <button
+                type="button"
+                style={{ background: "transparent", border: "none", color: "#94a3b8", fontSize: "1.2rem", cursor: "pointer" }}
+                onClick={() => setShowCreateModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleSaveLocalTask} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.35rem", color: "#94a3b8" }}>
+                  Task Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Implement order validation rules"
+                  value={taskForm.title}
+                  onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })}
+                  style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.35rem", color: "#94a3b8" }}>
+                  Description
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Details, acceptance criteria, or modules to update"
+                  value={taskForm.description}
+                  onChange={(e) => setTaskForm({ ...taskForm, description: e.target.value })}
+                  style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff" }}
+                />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.35rem", color: "#94a3b8" }}>
+                    Assignee User ID
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. DEV-001 or alice"
+                    value={taskForm.assignee}
+                    onChange={(e) => setTaskForm({ ...taskForm, assignee: e.target.value })}
+                    style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff" }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.35rem", color: "#94a3b8" }}>
+                    Priority
+                  </label>
+                  <select
+                    value={taskForm.priority}
+                    onChange={(e) => setTaskForm({ ...taskForm, priority: e.target.value })}
+                    style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.15)", color: "#fff" }}
+                  >
+                    <option value="CRITICAL">Critical</option>
+                    <option value="HIGH">High</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="LOW">Low</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.35rem", color: "#94a3b8" }}>
+                  Status
+                </label>
+                <select
+                  value={taskForm.status}
+                  onChange={(e) => setTaskForm({ ...taskForm, status: e.target.value })}
+                  style={{ width: "100%", padding: "0.6rem", borderRadius: "6px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.15)", color: "#fff" }}
+                >
+                  <option value="TODO">To Do</option>
+                  <option value="IN_PROGRESS">In Progress</option>
+                  <option value="COMPLETED">Completed</option>
+                  <option value="BLOCKED">Blocked</option>
+                </select>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem", marginTop: "0.5rem" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setShowCreateModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ background: "#10b981", borderColor: "#059669" }}
+                  disabled={creatingTask}
+                >
+                  {creatingTask ? "Creating..." : "Create Task (PP-#)"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

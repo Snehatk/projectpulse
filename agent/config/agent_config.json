@@ -2,14 +2,16 @@
   "agent_id": "AGENT-DEV-001",
   "user_id": "DEV-001",
   "user_name": "Alex Rivera",
-  "project_id": "DLX",
-  "project_name": "DLX E-Commerce Platform",
+  "project_id": "PP",
+  "project_name": "Showcase Order Service",
   "role": "DEVELOPER",
   "machine_name": "DEV-PC",
   "machine_id": "MAC-01",
-  "project_folder": "E:\\projects\\projectpulse",
+  "project_folder": "C:\\Users\\kingn\\OneDrive\\Desktop\\projectpulse\\projectpulse\\showcase_project",
   "backend_url": "http://127.0.0.1:8000",
   "frontend_url": "http://127.0.0.1:5173",
+  "device_token": "",
+  "device_id": "",
   "monitoring_active": true,
   "allowed_sources": [
     "FILE",
@@ -18,5 +20,9 @@
     "TEST",
     "QA",
     "VS_CODE"
-  ]
+  ],
+  "autostart_with_windows": false,
+  "idle_threshold_seconds": 300.0,
+  "vscode_auto_detect": true,
+  "custom_exclusions": []
 }

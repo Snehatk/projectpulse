@@ -12,3 +12,5 @@ data/
 *.log
 node_modules/
 frontend/dist/
+tools/
+**/target/

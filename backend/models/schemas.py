@@ -380,3 +380,317 @@ class CodeExplanationResponse(BaseModel):
     evidence_signals: list[str] = Field(default_factory=list)
 
 
+# Test Case Management Schemas
+class TestCaseCreate(BaseModel):
+    title: str
+    suite_id: str = "SUITE-DEFAULT"
+    suite_name: str = "General Test Suite"
+    description: str = ""
+    test_type: str = "AUTOMATED"  # AUTOMATED, MANUAL, REGRESSION
+    priority: str = "MEDIUM"      # LOW, MEDIUM, HIGH, CRITICAL
+    status: str = "READY"         # DRAFT, READY, IN_PROGRESS, PASSED, FAILED, BLOCKED
+    preconditions: str = ""
+    steps: str = ""
+    expected_result: str = ""
+    linked_jira_key: str = ""
+    assigned_to: str = "Dave Miller"
+
+
+class TestCaseUpdate(BaseModel):
+    title: str | None = None
+    suite_id: str | None = None
+    suite_name: str | None = None
+    description: str | None = None
+    test_type: str | None = None
+    priority: str | None = None
+    status: str | None = None
+    preconditions: str | None = None
+    steps: str | None = None
+    expected_result: str | None = None
+    linked_jira_key: str | None = None
+    assigned_to: str | None = None
+
+
+class TestCaseExecuteRequest(BaseModel):
+    verdict: str  # PASSED, FAILED, BLOCKED, SKIPPED
+    notes: str = ""
+    executed_by: str = "Dave Miller"
+
+
+class TestCaseResponse(BaseModel):
+    test_case_id: str
+    project_id: str
+    suite_id: str
+    suite_name: str
+    title: str
+    description: str
+    test_type: str
+    priority: str
+    status: str
+    preconditions: str
+    steps: str
+    expected_result: str
+    linked_jira_key: str
+    assigned_to: str
+    created_by: str
+    last_executed_at: str | None = None
+    last_verdict: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+# Defect Draft & Test Failure Linking Schemas
+class DefectDraftCreate(BaseModel):
+    title: str
+    description: str = ""
+    test_case_id: str | None = None
+    test_failure_event_id: str | None = None
+    test_name: str = ""
+    stack_trace: str = ""
+    severity: str = "HIGH"
+    priority: str = "HIGH"
+    linked_jira_issue: str = ""
+    created_by: str = "Dave Miller"
+
+
+class DefectDraftResponse(BaseModel):
+    draft_id: str
+    project_id: str
+    test_case_id: str | None = None
+    test_failure_event_id: str | None = None
+    test_name: str
+    stack_trace: str
+    title: str
+    description: str
+    severity: str
+    priority: str
+    linked_jira_issue: str
+    status: str
+    created_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+# Tester Overview Dashboard Response
+class TesterOverviewResponse(BaseModel):
+    project_id: str
+    project_name: str
+    total_test_runs: int
+    total_tests: int
+    passed: int
+    failed: int
+    skipped: int
+    pass_rate: float
+    test_runs_today: int
+    open_defects: list[dict[str, Any]] = Field(default_factory=list)
+    pending_regression_tests: list[TestCaseResponse] = Field(default_factory=list)
+    agent_sync_status: dict[str, Any] = Field(default_factory=dict)
+    upcoming_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    test_cases: list[TestCaseResponse] = Field(default_factory=list)
+    defect_drafts: list[DefectDraftResponse] = Field(default_factory=list)
+    repeated_failures: list[dict[str, Any]] = Field(default_factory=list)
+    recent_executions: list[dict[str, Any]] = Field(default_factory=list)
+    recent_events: list[EventResponse] = Field(default_factory=list)
+
+
+# Developer Overview Dashboard Response
+class DeveloperOverviewResponse(BaseModel):
+    project_id: str
+    project_name: str
+    user_id: str
+    developer_name: str
+    assigned_jira_issues: list[dict[str, Any]] = Field(default_factory=list)
+    recent_commits_and_prs: list[dict[str, Any]] = Field(default_factory=list)
+    build_pipeline_results: dict[str, Any] = Field(default_factory=dict)
+    deadline_and_blocked_alerts: list[dict[str, Any]] = Field(default_factory=list)
+    agent_sync_status: dict[str, Any] = Field(default_factory=dict)
+    recent_activity: list[EventResponse] = Field(default_factory=list)
+    what_you_did: list[str] = Field(default_factory=list)
+    pending_reviews: list[dict[str, Any]] = Field(default_factory=list)
+    current_status: str = "Active development"
+    monitoring_active: bool = True
+
+
+# AI Developer Assistant Schemas
+class DeveloperAIAssistRequest(BaseModel):
+    project_id: str
+    user_id: str = "DEV-001"
+    mode: str = "general"  # explain_build, summarize_pr, explain_code, debug_steps, jira_criteria, plan_implementation, general
+    prompt: str = ""
+    context_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeveloperAIAssistResponse(BaseModel):
+    mode: str
+    title: str
+    explanation: str
+    suggested_steps: list[str] = Field(default_factory=list)
+    code_snippets: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    is_safe_advisory: bool = True
+
+
+# =============================================================
+# Code Studio, Real-Time Change Tracking & Git Sync Schemas
+# =============================================================
+
+class WorkspaceFileItem(BaseModel):
+    path: str
+    name: str
+    is_dir: bool
+    size: int = 0
+    language: str = "plaintext"
+    children: list["WorkspaceFileItem"] = Field(default_factory=list)
+
+
+class FileReadResponse(BaseModel):
+    path: str
+    content: str
+    language: str
+    size: int
+    last_modified: str
+
+
+class FileSaveRequest(BaseModel):
+    path: str
+    content: str
+    user_id: str = "DEV-001"
+    change_set_title: str | None = None
+
+
+class ErrorItem(BaseModel):
+    error_id: str
+    project_id: str
+    change_set_id: str | None = None
+    error_type: str  # SYNTAX_ERROR, TEST_FAILURE, BUILD_ERROR, RUNTIME_EXCEPTION
+    severity: str    # CRITICAL, HIGH, MEDIUM, LOW
+    file_path: str = ""
+    line_number: int | None = None
+    message: str
+    details: str = ""
+    status: str      # OPEN, RESOLVED, INVESTIGATING
+    verification_method: str = ""
+    detected_at: str
+    resolved_at: str | None = None
+
+
+class FileSaveResponse(BaseModel):
+    success: bool
+    path: str
+    change_set_id: str
+    change_set_status: str
+    ast_symbols: list[dict[str, Any]] = Field(default_factory=list)
+    errors_detected: list[ErrorItem] = Field(default_factory=list)
+    message: str = "Saved and analyzed"
+
+
+class TestRunResponse(BaseModel):
+    success: bool
+    total: int
+    passed: int
+    failed: int
+    duration_sec: float
+    output: str
+    errors_detected: list[ErrorItem] = Field(default_factory=list)
+    change_set_id: str | None = None
+    change_set_status: str = "IN_PROGRESS"
+
+
+class ChangeSetResponse(BaseModel):
+    change_set_id: str
+    project_id: str
+    user_id: str
+    title: str
+    status: str  # IN_PROGRESS, NEEDS_ATTENTION, READY_FOR_REVIEW, FINALIZED, SYNCED, SYNC_FAILED
+    files_modified: list[str] = Field(default_factory=list)
+    symbols_impacted: list[dict[str, Any]] = Field(default_factory=list)
+    diff_summary: str = ""
+    commit_hash: str | None = None
+    commit_message: str = ""
+    remote_synced: bool = False
+    sync_error: str | None = None
+    errors: list[ErrorItem] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class FinalizeChangeSetRequest(BaseModel):
+    commit_message: str
+    author_name: str = "Alex Rivera <alex@projectpulse.local>"
+
+
+class GitStatusResponse(BaseModel):
+    branch: str = "main"
+    is_clean: bool = True
+    uncommitted_files: list[str] = Field(default_factory=list)
+    staged_files: list[str] = Field(default_factory=list)
+    recent_commits: list[dict[str, Any]] = Field(default_factory=list)
+    remote_url: str = ""
+    active_change_set: ChangeSetResponse | None = None
+
+
+# --- Selenium & TestNG Schemas ---
+
+class SeleniumEnvironmentStatus(BaseModel):
+    java_installed: bool
+    java_version: str
+    maven_installed: bool
+    maven_version: str
+    chrome_installed: bool
+    chrome_path: str
+    is_ready: bool
+    missing_prerequisites: list[str] = Field(default_factory=list)
+    test_project_path: str
+    default_suite: str = "testng.xml"
+
+
+class SeleniumTestMethodResult(BaseModel):
+    name: str
+    class_name: str
+    status: str  # PASS, FAIL, SKIP
+    duration_seconds: float
+    description: str = ""
+    error_message: str = ""
+    stack_trace: str = ""
+
+
+class SeleniumRunRequest(BaseModel):
+    headless: bool = True
+    browser: str = "chrome"
+    test_url: str = ""
+    suite_file: str = "testng.xml"
+
+
+class SeleniumTestRunResponse(BaseModel):
+    run_id: str
+    project_id: str
+    suite_name: str
+    browser: str
+    headless: bool
+    status: str  # SUCCESS, FAILED, INFRASTRUCTURE_ERROR, RUNNING
+    total_tests: int
+    passed_tests: int
+    failed_tests: int
+    skipped_tests: int
+    pass_rate: float
+    duration_seconds: float
+    exit_code: int
+    stdout_excerpt: str
+    stderr_excerpt: str
+    test_methods: list[SeleniumTestMethodResult] = Field(default_factory=list)
+    report_file: str
+    executed_by: str
+    created_at: str
+
+
+class SeleniumTestRunListResponse(BaseModel):
+    project_id: str
+    environment: SeleniumEnvironmentStatus
+    runs: list[SeleniumTestRunResponse] = Field(default_factory=list)
+    total_runs: int = 0
+
+
+class SeleniumJiraLinkRequest(BaseModel):
+    jira_issue_key: str
+    test_name: str
+    failure_message: str = ""

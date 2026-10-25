@@ -13,12 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.database import init_db
-from backend.routers import api
+from backend.routers import api, auth
 
 app = FastAPI(
     title=settings.app_name,
-    description="Phase 1 — Developer Background Agent API",
-    version="0.1.0",
+    description="ProjectPulse AI — Cross-Functional Project Intelligence",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -29,20 +29,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(api.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
 def on_startup():
     init_db()
-    from backend.database import SessionLocal
-    from backend.services.seed_service import seed_demo_data
+    if settings.demo_mode:
+        from backend.database import SessionLocal
+        from backend.services.seed_service import seed_demo_data
 
-    db = SessionLocal()
-    try:
-        seed_demo_data(db)
-    finally:
-        db.close()
+        db = SessionLocal()
+        try:
+            seed_demo_data(db)
+        finally:
+            db.close()
 
 
 @app.get("/")

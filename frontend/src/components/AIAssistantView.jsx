@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { chatWithAI, getAIRisks, getAISuggestions, getTasks } from "../api/client";
+import { chatWithAI, getAIBudgetStatus, getAIRisks, getAISuggestions, getTasks } from "../api/client";
 
 export default function AIAssistantView({ projectId }) {
   const [messages, setMessages] = useState([
     {
       sender: "assistant",
-      text: "Hello! I am your **ProjectPulse AI Copilot**. I continuously evaluate background engineering telemetry across Jira Cloud, git commits, build logs, and test quality gates. Ask me about project health, active plan vs reality discrepancies, or specific tasks like **KAN-2**.",
-      citations: ["Telemetry RAG Engine Active", "Jira Cloud Grounded"],
+      text: "Hello! I am your **ProjectPulse AI Copilot**. I continuously evaluate background engineering telemetry across workstation commits, build logs, file modifications, and test quality gates. Ask me about project health, active plan vs reality discrepancies, or specific tasks.",
+      citations: ["Telemetry RAG Engine Active", "Zero-Fabrication Grounded"],
       context: null,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
@@ -16,6 +16,7 @@ export default function AIAssistantView({ projectId }) {
   const [suggestions, setSuggestions] = useState([]);
   const [activeTasks, setActiveTasks] = useState([]);
   const [activeRisks, setActiveRisks] = useState([]);
+  const [budgetStatus, setBudgetStatus] = useState(null);
   const messagesEndRef = useRef(null);
 
   const defaultPrompts = [
@@ -23,11 +24,15 @@ export default function AIAssistantView({ projectId }) {
     "Find status mismatches",
     "Summarize today's activity",
     "Show project risks",
-    "Explain KAN-2",
     "Show overdue tasks",
+    "When did development start?",
   ];
 
   useEffect(() => {
+    getAIBudgetStatus()
+      .then((b) => setBudgetStatus(b))
+      .catch(() => {});
+
     if (projectId) {
       getAISuggestions(projectId)
         .then((res) => {
@@ -111,7 +116,43 @@ export default function AIAssistantView({ projectId }) {
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+          {budgetStatus && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "0.5rem",
+                padding: "0.35rem 0.75rem",
+                borderRadius: "20px",
+                fontSize: "0.78rem",
+                fontWeight: 600,
+                background:
+                  budgetStatus.mode === "GEMINI"
+                    ? "rgba(168, 85, 247, 0.15)"
+                    : budgetStatus.mode === "FALLBACK"
+                    ? "rgba(245, 158, 11, 0.15)"
+                    : "rgba(56, 189, 248, 0.15)",
+                border:
+                  budgetStatus.mode === "GEMINI"
+                    ? "1px solid rgba(168, 85, 247, 0.4)"
+                    : budgetStatus.mode === "FALLBACK"
+                    ? "1px solid rgba(245, 158, 11, 0.4)"
+                    : "1px solid rgba(56, 189, 248, 0.4)",
+                color:
+                  budgetStatus.mode === "GEMINI"
+                    ? "#d8b4fe"
+                    : budgetStatus.mode === "FALLBACK"
+                    ? "#fcd34d"
+                    : "#7dd3fc",
+              }}
+            >
+              <span>{budgetStatus.mode === "GEMINI" ? "⚡ GEMINI 1.5 FLASH" : budgetStatus.mode === "FALLBACK" ? "⚠️ FALLBACK LOCAL" : "🛡️ LOCAL ENGINE"}</span>
+              <span style={{ opacity: 0.8, fontSize: "0.72rem" }}>
+                ({budgetStatus.remaining_today}/{budgetStatus.daily_cap} free calls today)
+              </span>
+            </div>
+          )}
           <button
             type="button"
             className="btn-secondary"

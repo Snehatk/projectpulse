@@ -1,22 +1,35 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 async function fetchJson(path, options = {}) {
+  const token = localStorage.getItem("projectpulse_token");
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  };
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
     ...options,
+    headers,
   });
+  const text = await response.text();
+  let parsed = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+    const detail =
+      (parsed && typeof parsed === "object" ? parsed.detail : null) ||
+      (typeof parsed === "string" ? parsed : null) ||
+      `Request failed with status ${response.status}`;
+    throw new Error(detail);
   }
-  const data = await response.json();
-  if (data == null) {
-    throw new Error("Empty response from server.");
-  }
-  return data;
+
+  return parsed;
 }
 
 export async function getAppConfig() {
@@ -41,6 +54,13 @@ export async function getAgents(projectId = "") {
 export async function getTasks(projectId = "") {
   const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
   return fetchJson(`/api/tasks${q}`);
+}
+
+export async function createLocalTask(payload) {
+  return fetchJson("/api/tasks", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getEvents(params = {}) {
@@ -103,6 +123,10 @@ export async function syncIntegrations(projectId = "DLX") {
 // AI Assistant APIs (Phases 14 & 15)
 export async function getAISuggestions(projectId = "DLX") {
   return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/ai/suggestions`);
+}
+
+export async function getAIBudgetStatus() {
+  return fetchJson("/api/ai/budget-status");
 }
 
 export async function chatWithAI(projectId = "DLX", query) {
@@ -193,6 +217,237 @@ export async function syncJiraProject(projectId = null, jiraProjectKey = null) {
   });
 }
 
+// -------------------------------------------------------------
+// Authentication, User Management & Device Pairing API
+// -------------------------------------------------------------
 
+export async function getAuthStatus() {
+  return fetchJson("/api/auth/status");
+}
+
+export async function loginUser(email, password) {
+  return fetchJson("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function setupFirstPM(payload) {
+  return fetchJson("/api/auth/setup-first-pm", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getCurrentUserProfile() {
+  return fetchJson("/api/auth/me");
+}
+
+export async function getTeamUsers() {
+  return fetchJson("/api/auth/users");
+}
+
+export async function createTeamUser(payload) {
+  return fetchJson("/api/auth/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTeamUser(userId, payload) {
+  return fetchJson(`/api/auth/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function generatePairingCode(projectId = "PP") {
+  return fetchJson(`/api/auth/pair-code?project_id=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+  });
+}
+
+export async function getPairedDevices() {
+  return fetchJson("/api/auth/devices");
+}
+
+export async function revokePairedDevice(deviceId) {
+  return fetchJson(`/api/auth/devices/${encodeURIComponent(deviceId)}/revoke`, {
+    method: "POST",
+  });
+}
+
+export async function getAuditLogs(limit = 50) {
+  return fetchJson(`/api/auth/audit-logs?limit=${limit}`);
+}
+
+// -------------------------------------------------------------
+// Tester Overview & Test Case Management
+// -------------------------------------------------------------
+
+export async function getTesterOverview(projectId = "KAN") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/tester-overview`);
+}
+
+export async function listTestCases(projectId = "KAN", params = {}) {
+  const q = new URLSearchParams(params).toString();
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/test-cases${q ? `?${q}` : ""}`);
+}
+
+export async function createTestCase(projectId = "KAN", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/test-cases`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTestCase(testCaseId, payload = {}) {
+  return fetchJson(`/api/test-cases/${encodeURIComponent(testCaseId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function executeTestCase(testCaseId, verdict = "PASSED", notes = "", executedBy = "Dave Miller (QA)") {
+  return fetchJson(`/api/test-cases/${encodeURIComponent(testCaseId)}/execute`, {
+    method: "POST",
+    body: JSON.stringify({ verdict, notes, executed_by: executedBy }),
+  });
+}
+
+export async function deleteTestCase(testCaseId) {
+  return fetchJson(`/api/test-cases/${encodeURIComponent(testCaseId)}`, {
+    method: "DELETE",
+  });
+}
+
+// -------------------------------------------------------------
+// Defect Drafts & Failure Linking
+// -------------------------------------------------------------
+
+export async function listDefectDrafts(projectId = "KAN") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/defect-drafts`);
+}
+
+export async function createDefectDraft(projectId = "KAN", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/defect-drafts`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function confirmDefectDraft(draftId, confirmedBy = "Dave Miller (QA)") {
+  const q = new URLSearchParams({ confirmed_by: confirmedBy }).toString();
+  return fetchJson(`/api/defect-drafts/${encodeURIComponent(draftId)}/confirm?${q}`, {
+    method: "POST",
+  });
+}
+
+export async function deleteDefectDraft(draftId) {
+  return fetchJson(`/api/defect-drafts/${encodeURIComponent(draftId)}`, {
+    method: "DELETE",
+  });
+}
+
+// -------------------------------------------------------------
+// Developer Overview & AI Developer Assistant
+// -------------------------------------------------------------
+
+export async function getDeveloperOverview(projectId = "KAN", userId = "DEV-001") {
+  const q = new URLSearchParams({ user_id: userId }).toString();
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/developer-overview?${q}`);
+}
+
+export async function askDeveloperAI(projectId = "KAN", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/developer/ai-assist`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+// -------------------------------------------------------------
+// Real-Time Code Tracking, Error Monitoring & Git Sync
+// -------------------------------------------------------------
+
+export async function listWorkspaceFiles(projectId = "PP") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/files`);
+}
+
+export async function readWorkspaceFile(projectId = "PP", path = "") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/file?path=${encodeURIComponent(path)}`);
+}
+
+export async function saveWorkspaceFile(projectId = "PP", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/file`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function runWorkspaceTests(projectId = "PP", changeSetId = null) {
+  const q = changeSetId ? `?change_set_id=${encodeURIComponent(changeSetId)}` : "";
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/test-run${q}`, {
+    method: "POST",
+  });
+}
+
+export async function getActiveChangeSet(projectId = "PP") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/change-sets/active`);
+}
+
+export async function listChangeSets(projectId = "PP", limit = 15) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/change-sets?limit=${limit}`);
+}
+
+export async function listTrackedErrors(projectId = "PP", status = "ALL") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/errors?status=${encodeURIComponent(status)}`);
+}
+
+export async function getGitStatus(projectId = "PP") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/git-status`);
+}
+
+export async function finalizeChangeSet(projectId = "PP", changeSetId = "", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/change-sets/${encodeURIComponent(changeSetId)}/finalize`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function syncChangeSet(projectId = "PP", changeSetId = "") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/code/change-sets/${encodeURIComponent(changeSetId)}/sync`, {
+    method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Automated Browser Testing (Selenium + Java + TestNG)
+// ---------------------------------------------------------------------------
+
+export async function getSeleniumStatus(projectId = "PP") {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/selenium/status`);
+}
+
+export async function listSeleniumRuns(projectId = "PP", limit = 25) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/selenium/runs?limit=${limit}`);
+}
+
+export async function getSeleniumRun(runId) {
+  return fetchJson(`/api/selenium/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function runSeleniumSuite(projectId = "PP", payload = {}) {
+  return fetchJson(`/api/projects/${encodeURIComponent(projectId)}/selenium/run`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function linkSeleniumFailureToJira(runId, payload = {}) {
+  return fetchJson(`/api/selenium/runs/${encodeURIComponent(runId)}/link-jira`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
 
 

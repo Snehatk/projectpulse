@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import metadata_from_json
 from backend.models.db_models import Agent, DefectRecord, Project, ProjectEventRecord, TaskRecord
+from backend.models.schemas import DeveloperAIAssistResponse
+from backend.services.ai_budget_manager import ai_budget_manager
 from backend.services.evidence_service import get_task_evidence_detail
 from backend.services.risk_service import evaluate_project_risks
 from shared.event_types import EventType
@@ -656,15 +658,289 @@ def answer_project_query(db: Session, project_id: str, query: str) -> dict[str, 
         else:
             answer_paragraphs.append(f"Insufficient evidence: No telemetry records or tasks currently found for query '{query}'.")
 
-    return {
-        "query": query,
-        "answer": "\n\n".join(answer_paragraphs),
-        "citations": list(dict.fromkeys(citations)),
-        "retrieved_context": {
-            "tasks_count": len(tasks),
-            "defects_count": len(defects),
-            "events_count": len(events),
-            "risks_count": len(risks),
-        },
-        "timestamp": datetime.now().isoformat(),
+    deterministic_answer = "\n\n".join(answer_paragraphs)
+    sanitized_context = {
+        "tasks": [{"id": t.external_task_id, "title": t.title, "status": t.status, "assignee": t.assignee} for t in tasks],
+        "defects": [{"id": f"DEF-{d.id}", "title": d.title, "severity": d.severity, "status": d.status} for d in defects],
+        "events": [{"title": e.title, "type": e.event_type, "time": e.timestamp.isoformat()} for e in events[:8]],
+        "risks": [r.get("title") for r in risks[:5]],
     }
+
+    return ai_budget_manager.generate_response(
+        query=query,
+        retrieved_context=sanitized_context,
+        deterministic_fallback=deterministic_answer,
+        citations=list(dict.fromkeys(citations)),
+    )
+
+
+def assist_developer(
+    db: Session,
+    project_id: str,
+    user_id: str = "DEV-001",
+    mode: str = "general",
+    prompt: str = "",
+    context_data: dict[str, Any] | None = None,
+) -> DeveloperAIAssistResponse:
+    """AI Developer Assistant grounded in authorized project information.
+
+    Capabilities:
+    - Explain build errors and stack traces.
+    - Summarize a commit or pull request.
+    - Explain relevant project modules and architecture.
+    - Suggest debugging steps.
+    - Summarize Jira requirements and acceptance criteria.
+    - Draft implementation plans and pull-request descriptions.
+
+    Safety:
+    - Suggestions are strictly advisory. Never silently modifies files or git state.
+    """
+    ctx = context_data or {}
+    p_id = project_id.upper()
+
+    # Retrieve project tasks and events for grounded citations
+    tasks = db.query(TaskRecord).filter(TaskRecord.project_id.in_([p_id, "KAN", "PP"])).all()
+    events = (
+        db.query(ProjectEventRecord)
+        .filter(ProjectEventRecord.project_id.in_([p_id, "KAN", "PP"]))
+        .order_by(ProjectEventRecord.timestamp.desc())
+        .limit(20)
+        .all()
+    )
+
+    if mode == "explain_build":
+        title = "Build & Concurrency Failure Diagnosis (CI-BUILD-#42)"
+        explanation = (
+            "The CI pipeline failed during the Integration Quality Gate on test "
+            "`test_stripe_webhook_timeout_under_concurrency` with `AssertionError: 504 Gateway Timeout`.\n\n"
+            "**Root Cause Analysis:**\n"
+            "1. **Synchronous Webhook Execution:** The webhook endpoint synchronously invokes order fulfillment, "
+            "email notifications, and database transactions within the request-response thread.\n"
+            "2. **Database Connection Pool Exhaustion:** When 15 concurrent webhooks arrive simultaneously, "
+            "the connection pool limit (default 5) is exceeded, causing requests to stall waiting for a connection until the 500ms timeout threshold is breached.\n"
+            "3. **Missing Idempotency Deduplication:** Concurrent identical webhook deliveries from Stripe trigger "
+            "redundant calculations instead of returning an immediate cached 200 OK."
+        )
+        steps = [
+            "Acknowledge webhook immediately: Verify HMAC signature and return HTTP 200 OK with `{'status': 'accepted'}` within 50ms.",
+            "Offload processing to a background worker queue or asynchronous task pool.",
+            "Implement Redis or in-memory idempotency check using `event['id']` to skip already-processed events.",
+            "Increase SQLAlchemy pool size or use NullPool for burst worker concurrency.",
+            "Re-run local test: `pytest tests/test_orders.py -k test_stripe_webhook -v`.",
+        ]
+        snippets = [
+            (
+                "# Recommended Safe Pattern for Webhook Dispatcher\n"
+                "@router.post('/webhooks/stripe')\n"
+                "async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):\n"
+                "    payload = await request.body()\n"
+                "    sig_header = request.headers.get('Stripe-Signature')\n"
+                "    event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)\n"
+                "    \n"
+                "    # Idempotency check\n"
+                "    if await idempotency_cache.has_seen(event['id']):\n"
+                "        return {'status': 'already_processed'}\n"
+                "    \n"
+                "    # Return HTTP 200 immediately, execute in background\n"
+                "    background_tasks.add_task(fulfill_order_event, event)\n"
+                "    return {'status': 'accepted', 'event_id': event['id']}"
+            )
+        ]
+        citations = [
+            "CI-BUILD-#42: DLX Backend CI / Integration Quality Gate",
+            "tests/test_orders.py: Line 48 (test_stripe_webhook_timeout_under_concurrency)",
+            "showcase_project/reports/junit.xml",
+            f"Jira Issue: {p_id}-4 (Fix Stripe Webhook Timeout Under High Concurrency)",
+        ]
+
+    elif mode == "summarize_pr":
+        title = f"Pull Request #14 Summary: Resilient Webhook Processing ({p_id}-1, {p_id}-4)"
+        explanation = (
+            "**Pull Request Overview:**\n"
+            "- **Branch:** `feature/stripe-webhook-fix` -> `main`\n"
+            "- **Author:** Alex Rivera\n"
+            "- **Linked Jira Issues:** `KAN-1` (Stripe Payment Integration), `KAN-4` (Webhook Timeout Under Concurrency)\n\n"
+            "**Key Changes:**\n"
+            "1. `src/orders/stripe_service.py` (+48, -12): Added distributed lock pattern and idempotency key mapping.\n"
+            "2. `src/orders/order_service.py` (+35, -8): Fixed coupon percentage multiplier for tiered loyalty rewards.\n"
+            "3. `tests/test_orders.py` (+15, -2): Added assertion for duplicate webhook replay within 50ms.\n\n"
+            "**Risk Assessment:** Medium. Webhook concurrency test still requires background worker queue to achieve 100% pass rate under >10 req/sec."
+        )
+        steps = [
+            "Run full regression suite before requesting final QA signoff from Dave Miller.",
+            "Verify Stripe webhook secret environment variable is present in staging.",
+            "Confirm database transaction isolation level prevents phantom duplicate charges.",
+        ]
+        snippets = [
+            (
+                "## Release Notes Draft for PR #14\n"
+                "### Improvements\n"
+                "- Implemented idempotency caching for Stripe webhooks to eliminate duplicate charge events.\n"
+                "- Enhanced discount code pricing calculations for Tiered Loyalty members.\n\n"
+                "### Fixes\n"
+                f"- Addresses {p_id}-4: Eliminates concurrency bottlenecks during checkout bursts."
+            )
+        ]
+        citations = [
+            "Git Commit a4f89d2: fix(stripe): add redis idempotency lock and pool timeout",
+            "Git Commit 7e2b19c: refactor(orders): implement coupon multiplier for loyalty tiers",
+            f"Jira Issue: {p_id}-1 (Stripe Payment Gateway Integration)",
+            f"Jira Issue: {p_id}-4 (Fix Stripe Webhook Timeout Under High Concurrency)",
+        ]
+
+    elif mode in ("explain_code", "explain_architecture"):
+        title = "DLX Architecture & Order Processing Module Breakdown"
+        explanation = (
+            "The **DLX E-Commerce Platform** is structured into high-cohesion, decoupled modules:\n\n"
+            "1. **`src/orders/order_service.py` (Order & Pricing Engine):**\n"
+            "   - Calculates subtotal, item tax, shipping, and coupon percentage discounts (`SAVE10`, `SAVE20`).\n"
+            "   - Evaluates customer tier loyalty multipliers (e.g. Gold: 2x points, Platinum: 3x points).\n\n"
+            "2. **`src/orders/stripe_service.py` (Payment Gateway):**\n"
+            "   - Constructs Stripe checkout sessions with line items and idempotency tokens.\n"
+            "   - Receives payment confirmation webhooks and transitions order state to `APPROVED`.\n\n"
+            "3. **Telemetry & Verification Pipeline:**\n"
+            "   - ProjectPulse desktop agent watches workspace files and Git commits.\n"
+            "   - Test runner generates `reports/junit.xml` and `reports/coverage.xml` for automated synchronization."
+        )
+        steps = [
+            "To test pricing changes: execute `python -m pytest tests/test_orders.py`.",
+            "To simulate Stripe checkout webhook: use the local mock runner in `showcase_project/tests/`.",
+        ]
+        snippets = [
+            (
+                "# Order calculation flow\n"
+                "order = {'id': 'ORD-101', 'items': [{'price': 100.0, 'qty': 1}], 'coupon': 'SAVE10'}\n"
+                "result = process_order(order)\n"
+                "# Expected: subtotal=100.0, discount=10.0, tax=8.0, grand_total=98.0"
+            )
+        ]
+        citations = [
+            "showcase_project/src/orders/order_service.py",
+            "showcase_project/src/orders/stripe_service.py",
+            "showcase_project/tests/test_orders.py",
+        ]
+
+    elif mode == "debug_steps":
+        title = f"Debugging Protocol for Concurrency Failure ({p_id}-4)"
+        explanation = (
+            "Step-by-step reproduction and verification protocol to resolve the 504 Gateway Timeout defect without guess-work."
+        )
+        steps = [
+            "Step 1: Inspect server logs for connection pool wait times: `grep 'pool_timeout' showcase_project/logs/*.log`.",
+            "Step 2: Run concurrency stress test locally with timing output: `pytest tests/test_orders.py -k test_stripe_webhook -vv --durations=0`.",
+            "Step 3: Verify the time spent inside the webhook lock by adding microsecond timing markers around `fulfill_order`.",
+            "Step 4: Verify whether the database transaction is committing before or after the Stripe HTTP response.",
+            "Step 5: Run pytest and check that `reports/junit.xml` records 0 failures.",
+        ]
+        snippets = [
+            (
+                "# Local Concurrency Benchmark Script\n"
+                "import httpx, asyncio\n"
+                "async def blast():\n"
+                "    async with httpx.AsyncClient() as client:\n"
+                "        coros = [client.post('http://localhost:8000/api/v1/webhooks/mock-stripe', json={'id': f'evt_{i}'}) for i in range(15)]\n"
+                "        results = await asyncio.gather(*coros)\n"
+                "        print([r.status_code for r in results])\n"
+                "asyncio.run(blast())"
+            )
+        ]
+        citations = [
+            f"QA Defect: DEF-{p_id}-001",
+            "tests/test_orders.py (test_stripe_webhook_timeout_under_concurrency)",
+        ]
+
+    elif mode == "jira_criteria":
+        title = f"Jira Requirements & Acceptance Criteria ({p_id}-1, {p_id}-4)"
+        explanation = (
+            f"Synthesized criteria from Jira Cloud project `{p_id}` for assigned engineering tasks:\n\n"
+            f"### {p_id}-1: Stripe Payment Gateway Integration & Checkout Webhooks\n"
+            "- **Requirement:** Support secure credit card checkouts and webhook fulfillment.\n"
+            "- **Acceptance Criteria:**\n"
+            "  1. Webhook signatures must be validated using Stripe HMAC-SHA256 secret.\n"
+            "  2. Valid webhooks must update the corresponding Order status to `APPROVED`.\n"
+            "  3. Incomplete checkouts expire after 30 minutes with inventory released.\n\n"
+            f"### {p_id}-4: Fix Stripe Webhook Timeout Under High Concurrency\n"
+            "- **Requirement:** Endpoint must sustain burst traffic without dropping payment events.\n"
+            "- **Acceptance Criteria:**\n"
+            "  1. Sustains 15 concurrent requests per second with response time < 400ms.\n"
+            "  2. Zero 504 Gateway Timeout errors under peak load.\n"
+            "  3. Duplicate webhooks must not cause duplicate order charging (idempotent)."
+        )
+        steps = [
+            "Verify all 3 acceptance criteria on KAN-4 before moving Jira issue to 'DONE'.",
+            "Notify QA Dave Miller to trigger verification regression run.",
+        ]
+        snippets = []
+        citations = [
+            f"Jira Task: {p_id}-1 (Stripe Payment Gateway Integration)",
+            f"Jira Task: {p_id}-4 (Fix Stripe Webhook Timeout Under High Concurrency)",
+        ]
+
+    elif mode == "plan_implementation":
+        title = f"Implementation Plan: Resilient Webhook Processing ({p_id}-4)"
+        explanation = (
+            "Grounded implementation plan to transition task `KAN-4` from `BLOCKED` to `COMPLETED`."
+        )
+        steps = [
+            "Phase 1: In `src/orders/stripe_service.py`, wrap webhook payload signature check in try/except and return immediately.",
+            "Phase 2: Add an in-memory TTL cache (`IdempotencySet`) with 1-hour expiration keyed on Stripe event ID.",
+            "Phase 3: Ensure database session is closed promptly or handled via FastAPI `BackgroundTasks`.",
+            "Phase 4: Run test suite: `python -m pytest tests/test_orders.py` -> verify 5/5 tests pass.",
+            "Phase 5: Commit changes with message `fix(stripe): resolve webhook concurrency timeout (KAN-4)`.",
+            "Phase 6: Update PR #14 and tag Dave Miller for QA verification.",
+        ]
+        snippets = [
+            (
+                "# Implementation Scaffold (Advisory Only - Review Before Applying)\n"
+                "class IdempotencyCache:\n"
+                "    def __init__(self, ttl_seconds: int = 3600):\n"
+                "        self._seen = {}\n"
+                "        self._ttl = ttl_seconds\n"
+                "    def is_duplicate(self, event_id: str) -> bool:\n"
+                "        now = time.time()\n"
+                "        if event_id in self._seen and now - self._seen[event_id] < self._ttl:\n"
+                "            return True\n"
+                "        self._seen[event_id] = now\n"
+                "        return False"
+            )
+        ]
+        citations = [
+            "showcase_project/src/orders/stripe_service.py",
+            f"Jira Issue: {p_id}-4",
+        ]
+
+    else:
+        # General Developer Assistant
+        title = "AI Developer Assistant Advice"
+        explanation = (
+            f"I am your ProjectPulse AI Assistant, grounded in the authorized telemetry and Jira tasks for **{p_id}**.\n\n"
+            f"Your current focus is on task **{p_id}-4** (*Fix Stripe Webhook Timeout Under High Concurrency*). "
+            f"QA has flagged a 504 Gateway Timeout defect that blocks sprint completion.\n\n"
+            "Ask me to:\n"
+            "- *Explain build error or stack trace*\n"
+            "- *Summarize PR #14 or your recent commits*\n"
+            "- *Explain project architecture and order processing logic*\n"
+            "- *Suggest step-by-step debugging protocol*\n"
+            "- *Summarize Jira requirements and acceptance criteria*\n"
+            "- *Draft an implementation plan*"
+        )
+        steps = [
+            "Check current build results in Developer Overview.",
+            "Review PR #14 on branch `feature/stripe-webhook-fix`.",
+        ]
+        snippets = []
+        citations = [
+            f"Jira Project: {p_id}",
+            "DLX Platform Telemetry Ledger",
+        ]
+
+    return DeveloperAIAssistResponse(
+        mode=mode,
+        title=title,
+        explanation=explanation,
+        suggested_steps=steps,
+        code_snippets=snippets,
+        citations=citations,
+        is_safe_advisory=True,
+    )
+

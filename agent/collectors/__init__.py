@@ -8,6 +8,7 @@ from agent.collectors.build_collector import BuildCollector
 from agent.collectors.file_watcher import ProjectFileWatcherCollector
 from agent.collectors.git_watcher import GitActivityCollector
 from agent.collectors.qa_collector import QACollector
+from agent.collectors.report_watcher import ReportWatcherCollector
 from agent.collectors.test_collector import TestCollector
 from agent.config import AgentConfig
 from agent.normalizer import EventNormalizer
@@ -48,7 +49,7 @@ class CollectorManager:
         role = getattr(self.config, "role", "DEVELOPER")
 
         # Developer Collectors
-        if role in ("DEVELOPER", "DEVOPS"):
+        if role == "DEVELOPER":
             if "VS_CODE" in sources or "FILE" in sources:
                 collectors.append(ProjectFileWatcherCollector(**common))
             if "GIT" in sources:
@@ -59,6 +60,7 @@ class CollectorManager:
         # Tester Collectors
         if role in ("TESTER", "QA") or "TEST" in sources:
             collectors.append(TestCollector(**common))
+            collectors.append(ReportWatcherCollector(**common))
 
         # QA Specific Collectors
         if role == "QA" or "QA" in sources:
